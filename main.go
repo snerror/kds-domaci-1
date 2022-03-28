@@ -31,12 +31,12 @@ func main() {
 
 	o := NewOutput()
 	c1 := NewCruncher(1, o)
-	c2 := NewCruncher(2, o)
-	c3 := NewCruncher(3, o)
+	// c2 := NewCruncher(2, o)
+	// c3 := NewCruncher(3, o)
 
 	fi.Crunchers = append(fi.Crunchers, c1)
-	fi.Crunchers = append(fi.Crunchers, c2)
-	fi.Crunchers = append(fi.Crunchers, c3)
+	// fi.Crunchers = append(fi.Crunchers, c2)
+	// fi.Crunchers = append(fi.Crunchers, c3)
 	// END SETUP
 
 	ctx, _ := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -57,8 +57,8 @@ func readKey(input chan rune) {
 
 func run(ctx context.Context) error {
 	fmt.Println("Application up.")
+	go app.inputs[0].Start(ctx)
 
-	go app.inputs[0].Start()
 APP:
 	for {
 		<-ctx.Done()
@@ -93,7 +93,7 @@ func (fi *FileInput) AddCruncher() {
 
 }
 
-func (fi *FileInput) Start() {
+func (fi *FileInput) Start(ctx context.Context) {
 	scaner := make(chan *File)
 	go fi.ScanDirs(scaner)
 
@@ -104,32 +104,34 @@ func (fi *FileInput) Start() {
 	}
 }
 
-func (fi *FileInput) ScanDirs(c chan *File) error {
+func (fi *FileInput) ScanDirs(c chan *File) {
 	for {
 		for _, dir := range fi.Dirs {
 			files, err := getFiles(dir)
 			if err != nil {
-				return err
+				fmt.Printf("failed fetching files: %s\n", err)
+				break
 			}
 
 			for i := range files {
-				found := (*File)(nil)
+				existing := (*File)(nil)
 				for j := range fi.Files {
 					if files[i].AbsolutePath == fi.Files[j].AbsolutePath {
-						found = &files[i]
+						existing = fi.Files[j]
 						break
 					}
 				}
 
-				if found == nil {
+				if existing == nil {
 					fi.Files = append(fi.Files, &files[i])
 					c <- &files[i]
-					// c <- fmt.Sprintf("input %d found new file %s\n", fi.Id, files[i].File.Name())
-				} else {
-					// c <- fmt.Sprintln("file already added: ", f.AbsolutePath)
-					// if f.File.ModTime() != found.File.ModTime() {
-					// 	// TODO check for modifications
-					// }
+					continue
+				}
+
+				if files[i].File.ModTime() != existing.File.ModTime() {
+					fmt.Println("FileInput.ScanDirs => modified file found =>", existing.File.Name())
+					existing.File = files[i].File
+					c <- existing
 				}
 			}
 		}
@@ -168,11 +170,6 @@ func getFiles(dir string) ([]File, error) {
 }
 
 func (f *File) ReadFile(crunchers []*Cruncher) {
-	// if f.Finished {
-	// 	done <- f.AbsolutePath
-	// 	return
-	// }
-
 	defer log.Printf("FileInput.ReadFile => finished reading %s", f.File.Name())
 
 	fmt.Println("FileInput.ReadFile => opening file", f.File.Name())
