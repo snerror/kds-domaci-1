@@ -45,16 +45,6 @@ func main() {
 	}
 }
 
-var reader = bufio.NewReader(os.Stdin)
-
-func readKey(input chan rune) {
-	char, _, err := reader.ReadRune()
-	if err != nil {
-		log.Fatal(err)
-	}
-	input <- char
-}
-
 func run(ctx context.Context) error {
 	fmt.Println("Application up.")
 	go app.inputs[0].Start(ctx)
