@@ -31,11 +31,11 @@ func main() {
 
 	o := NewOutput()
 	c1 := NewCruncher(1, o)
-	// c2 := NewCruncher(2, o)
+	c2 := NewCruncher(2, o)
 	// c3 := NewCruncher(3, o)
 
 	fi.Crunchers = append(fi.Crunchers, c1)
-	// fi.Crunchers = append(fi.Crunchers, c2)
+	fi.Crunchers = append(fi.Crunchers, c2)
 	// fi.Crunchers = append(fi.Crunchers, c3)
 	// END SETUP
 
@@ -165,13 +165,14 @@ func (f *File) ReadFile(crunchers []*Cruncher) {
 	fmt.Println("FileInput.ReadFile => opening file", f.File.Name())
 	file, err := os.Open(f.AbsolutePath)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Printf("failed reading file %s: %s\n", f.File.Name(), err)
+		return
 	}
 
 	defer func() {
 		fmt.Println("FileInput.ReadFile => closing file", f.File.Name())
 		if err = file.Close(); err != nil {
-			log.Fatal(err)
+			fmt.Printf("failed closing file %s: %s\n", f.File.Name(), err)
 		}
 		for _, c := range crunchers {
 			c.Done <- c.GenerateCruncherFileName(f)
@@ -220,21 +221,17 @@ func (cr *Cruncher) Listen() {
 			break
 		case f := <-cr.Done:
 			// fmt.Printf("Cruncher.Listen => cruncher arity %d => done received for %s\n", cr.Arity, f)
-			cc := cr.GetCounter(f)
-			cc.WaitGroup.Wait()
-			go cc.WriteResults(cr.Output)
+			go cr.GetCounter(f).WriteResults(cr.Output)
 			break
 		}
 	}
 }
 
 func (cr *Cruncher) Consume(s CruncherStream) {
-	words := strings.Fields(s.Text)
 	// fmt.Printf("Cruncher.Consume => cruncher arity %d => words received %d\n", cr.Arity, len(words))
 	cc := cr.GetOrCreateCounter(s.FileName)
-
 	cc.WaitGroup.Add(1)
-	cc.AddText(words)
+	cc.AddText(s.Text)
 }
 
 func (cr *Cruncher) GetCounter(fn string) *CruncherCounter {
@@ -277,9 +274,13 @@ func NewCruncherCounter(fn string) *CruncherCounter {
 	}
 }
 
-func (cc *CruncherCounter) AddText(words []string) {
-	defer cc.WaitGroup.Done()
-	defer cc.Mutex.Unlock()
+func (cc *CruncherCounter) AddText(text string) {
+	words := strings.Fields(text)
+
+	defer func() {
+		cc.WaitGroup.Done()
+		cc.Mutex.Unlock()
+	}()
 
 	cc.Mutex.Lock()
 	for _, w := range words {
@@ -292,14 +293,14 @@ func (cc *CruncherCounter) AddText(words []string) {
 }
 
 func (cc *CruncherCounter) WriteResults(o *Output) {
+	cc.WaitGroup.Wait()
+
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Println("Recovered in f", r)
 		}
 		o.Done <- cc.FileName
-		cc.Mutex.Unlock()
 	}()
-	cc.Mutex.Lock()
 
 	type kv struct {
 		Key   string
