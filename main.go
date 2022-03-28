@@ -26,17 +26,17 @@ func main() {
 	app = App{}
 
 	// SETUP
-	fi := NewFileInput("", []string{"data/disk1/C"})
+	fi := NewFileInput("", []string{"data/disk1/A"})
 	app.inputs = append(app.inputs, fi)
 
 	o := NewOutput()
 	c1 := NewCruncher(1, o)
-	// c2 := NewCruncher(2, o)
-	// c3 := NewCruncher(3, o)
+	c2 := NewCruncher(2, o)
+	c3 := NewCruncher(3, o)
 
 	fi.Crunchers = append(fi.Crunchers, c1)
-	// fi.Crunchers = append(fi.Crunchers, c2)
-	// fi.Crunchers = append(fi.Crunchers, c3)
+	fi.Crunchers = append(fi.Crunchers, c2)
+	fi.Crunchers = append(fi.Crunchers, c3)
 	// END SETUP
 
 	ctx, _ := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -174,6 +174,7 @@ func (f *File) ReadFile(crunchers []*Cruncher) {
 	// }
 
 	defer log.Printf("FileInput.ReadFile => finished reading %s", f.File.Name())
+
 	fmt.Println("FileInput.ReadFile => opening file", f.File.Name())
 	file, err := os.Open(f.AbsolutePath)
 	if err != nil {
@@ -185,6 +186,9 @@ func (f *File) ReadFile(crunchers []*Cruncher) {
 		if err = file.Close(); err != nil {
 			log.Fatal(err)
 		}
+		for _, c := range crunchers {
+			c.Done <- c.GenerateCruncherFileName(f)
+		}
 	}()
 
 	scanner := bufio.NewScanner(file)
@@ -192,10 +196,6 @@ func (f *File) ReadFile(crunchers []*Cruncher) {
 		for _, c := range crunchers {
 			c.Stream <- CruncherStream{c.GenerateCruncherFileName(f), fmt.Sprint(scanner.Text())}
 		}
-	}
-
-	for _, c := range crunchers {
-		c.Done <- c.GenerateCruncherFileName(f)
 	}
 }
 
@@ -228,12 +228,13 @@ func (cr *Cruncher) Listen() {
 	for {
 		select {
 		case s := <-cr.Stream:
-			// fmt.Printf("Cruncher.Listen => cruncher arity %d => signal received from %s\n", cr.Arity, s.FileName)
+			// fmt.Printf("Cruncher.Listen => cruncher arity %d => stream received from %s\n", cr.Arity, s.FileName)
 			go cr.Consume(s)
 			break
 		case f := <-cr.Done:
-			// fmt.Printf("Cruncher.Listen => cruncher arity %d => done for %s\n", cr.Arity, f)
+			// fmt.Printf("Cruncher.Listen => cruncher arity %d => done received for %s\n", cr.Arity, f)
 			cc := cr.GetCounter(f)
+			cc.WaitGroup.Wait()
 			go cc.WriteResults(cr.Output)
 			break
 		}
@@ -245,10 +246,8 @@ func (cr *Cruncher) Consume(s CruncherStream) {
 	// fmt.Printf("Cruncher.Consume => cruncher arity %d => words received %d\n", cr.Arity, len(words))
 	cc := cr.GetOrCreateCounter(s.FileName)
 
-	for _, w := range words {
-		cc.AddWord(w)
-		// cr.Output.Stream <- OutputStream{FileName: s.FileName, Key: w}
-	}
+	cc.WaitGroup.Add(1)
+	cc.AddText(words)
 }
 
 func (cr *Cruncher) GetCounter(fn string) *CruncherCounter {
@@ -278,9 +277,10 @@ func (cr *Cruncher) GenerateCruncherFileName(f *File) string {
 }
 
 type CruncherCounter struct {
-	FileName string
-	Mutex    sync.Mutex
-	Data     map[string]int
+	FileName  string
+	Mutex     sync.Mutex
+	Data      map[string]int
+	WaitGroup sync.WaitGroup
 }
 
 func NewCruncherCounter(fn string) *CruncherCounter {
@@ -290,18 +290,17 @@ func NewCruncherCounter(fn string) *CruncherCounter {
 	}
 }
 
-func (cc *CruncherCounter) AddWord(word string) {
-	defer func() {
-		if r := recover(); r != nil {
-			fmt.Println("Recovered in f", r)
-		}
-		cc.Mutex.Unlock()
-	}()
+func (cc *CruncherCounter) AddText(words []string) {
+	defer cc.WaitGroup.Done()
+	defer cc.Mutex.Unlock()
+
 	cc.Mutex.Lock()
-	if t, ok := cc.Data[word]; ok == false {
-		cc.Data[word] = 1
-	} else {
-		cc.Data[word] = t + 1
+	for _, w := range words {
+		if t, ok := cc.Data[w]; ok == false {
+			cc.Data[w] = 1
+		} else {
+			cc.Data[w] = t + 1
+		}
 	}
 }
 
