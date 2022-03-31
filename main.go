@@ -29,17 +29,17 @@ func main() {
 	app = App{}
 
 	// SETUP
-	fi := NewFileInput("", []string{"data/disk1/C"})
+	fi := NewFileInput("", []string{"data/disk1/A"})
 	app.inputs = append(app.inputs, fi)
 
 	// o := NewOutput()
 	c1 := NewCruncher(1)
-	// c2 := NewCruncher(2)
-	// c3 := NewCruncher(3, o)
+	c2 := NewCruncher(2)
+	c3 := NewCruncher(3)
 
 	fi.Crunchers = append(fi.Crunchers, c1)
-	// fi.Crunchers = append(fi.Crunchers, c2)
-	// fi.Crunchers = append(fi.Crunchers, c3)
+	fi.Crunchers = append(fi.Crunchers, c2)
+	fi.Crunchers = append(fi.Crunchers, c3)
 	// END SETUP
 
 	ctx, _ := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -93,7 +93,7 @@ func (fi *FileInput) Start(ctx context.Context) {
 	for {
 		// SEKVENCIJALNO AKO SU SA ISTOG DISKA
 		f := <-scaner
-		fmt.Println("FileInput.Start => file found", f.File.Name())
+		fmt.Println("FileInput => Start => file found", f.File.Name())
 		go f.ReadFile(fi.Crunchers)
 	}
 }
@@ -165,23 +165,23 @@ func getFiles(dir string) ([]File, error) {
 
 func (f *File) ReadFile(crunchers []*Cruncher) {
 	defer func() {
-		log.Printf("FileInput.ReadFile => finished reading %s", f.File.Name())
+		log.Printf("FileInput => ReadFile => finished reading %s", f.File.Name())
 		for _, c := range crunchers {
 			c.Done <- c.GenerateCruncherFileName(f) // TODO ovo je redudantno kad zavrim nove izmene
 		}
 	}()
 
-	fmt.Println("FileInput.ReadFile => opening file", f.File.Name())
+	fmt.Println("FileInput => ReadFile => opening file", f.File.Name())
 	file, err := os.Open(f.AbsolutePath)
 	if err != nil {
-		fmt.Printf("failed reading file %s: %s\n", f.File.Name(), err)
+		fmt.Printf("FileInput => Read File => failed reading file %s: %s\n", f.File.Name(), err)
 		return
 	}
 
 	defer func() {
-		fmt.Println("FileInput.ReadFile => closing file", f.File.Name())
+		fmt.Println("FileInput => ReadFile => closing file", f.File.Name())
 		if err = file.Close(); err != nil {
-			fmt.Printf("failed closing file %s: %s\n", f.File.Name(), err)
+			fmt.Printf("FileInput => Read File => failed closing file %s: %s\n", f.File.Name(), err)
 		}
 	}()
 
@@ -234,7 +234,6 @@ func (cr *Cruncher) Listen() {
 	for {
 		s := <-cr.Stream
 		go cr.CrunchFile(&s)
-		break
 	}
 }
 
@@ -272,6 +271,11 @@ type CruncherCounter struct {
 	Mutex     sync.Mutex
 	Data      map[string]int
 	WaitGroup sync.WaitGroup
+}
+
+type KeyValue struct {
+	Key   string
+	Value int
 }
 
 func NewCruncherCounter(fn string, arity int) *CruncherCounter {
@@ -320,17 +324,11 @@ func (cc *CruncherCounter) WriteResults(o *Output) {
 		if r := recover(); r != nil {
 			fmt.Println("Recovered in f", r)
 		}
-		o.Done <- cc.FileName
 	}()
 
-	type kv struct {
-		Key   string
-		Value int
-	}
-
-	var ss []kv
+	var ss []*KeyValue
 	for k, v := range cc.Data {
-		ss = append(ss, kv{k, v})
+		ss = append(ss, &KeyValue{k, v})
 	}
 
 	sort.Slice(ss, func(i, j int) bool {
@@ -338,9 +336,7 @@ func (cc *CruncherCounter) WriteResults(o *Output) {
 	})
 
 	fmt.Printf("CruncherCounter => WriteResults => started streaming to output for %s\n", cc.FileName)
-	for _, s := range ss {
-		o.Stream <- OutputStream{cc.FileName, fmt.Sprintf("%s %d\n", s.Key, s.Value)}
-	}
+	o.Stream <- OutputStream{cc.FileName, ss}
 }
 
 type Output struct {
@@ -350,7 +346,7 @@ type Output struct {
 
 type OutputStream struct {
 	FileName string
-	Row      string
+	Data     []*KeyValue
 }
 
 func NewOutput() *Output {
@@ -366,13 +362,10 @@ func (o *Output) Listen() {
 	for {
 		select {
 		case s := <-o.Stream:
-			// fmt.Printf("Output.Listen => signal received from %s with key %s\n", s.FileName, s.Row)
-			if err := WriteToFile(s.FileName, s.Row); err != nil {
-				fmt.Println("Output => Listen => stream => error =>", err)
-			}
+			go o.WriteToFile(&s)
 			break
 		case d := <-o.Done:
-			fmt.Printf("Output => Listen => done received from %s\n", d)
+			fmt.Printf("Output => Listen => finished writing file %s\n", d)
 			if err := FinishFile(d); err != nil {
 				fmt.Println("Output => Listen => done => error =>", err)
 			}
@@ -381,21 +374,30 @@ func (o *Output) Listen() {
 	}
 }
 
-func WriteToFile(fn string, row string) error {
-	path := fmt.Sprintf("./output/%s-tmp", fn)
+func (o *Output) WriteToFile(s *OutputStream) {
+	path := fmt.Sprintf("./output/%s-tmp", s.FileName)
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println("Outpuit => WriteToFile => error while writing ", r)
+
+		}
+		o.Done <- s.FileName
+	}()
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
 	if err != nil {
-		return fmt.Errorf("failed creating or opening file: %s", err)
+		fmt.Printf("failed creating or opening file: %s\n", err)
+		return
 	}
 
 	defer f.Close()
 
-	if _, err = f.WriteString(row); err != nil {
-		return fmt.Errorf("failed to write to file: %s", err)
+	for _, s := range s.Data {
+		if _, err = f.WriteString(fmt.Sprintf("%s %d\n", s.Key, s.Value)); err != nil {
+			fmt.Printf("failed to write to file: %s\n", err)
+			return
+		}
 	}
-
-	return nil
 }
 
 func FinishFile(fn string) error {
