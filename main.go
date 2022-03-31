@@ -26,16 +26,16 @@ func main() {
 	app = App{}
 
 	// SETUP
-	fi := NewFileInput("", []string{"data/disk1/A"})
+	fi := NewFileInput("", []string{"data/disk1/C"})
 	app.inputs = append(app.inputs, fi)
 
 	o := NewOutput()
 	c1 := NewCruncher(1, o)
-	c2 := NewCruncher(2, o)
+	// c2 := NewCruncher(2, o)
 	// c3 := NewCruncher(3, o)
 
 	fi.Crunchers = append(fi.Crunchers, c1)
-	fi.Crunchers = append(fi.Crunchers, c2)
+	// fi.Crunchers = append(fi.Crunchers, c2)
 	// fi.Crunchers = append(fi.Crunchers, c3)
 	// END SETUP
 
@@ -160,7 +160,12 @@ func getFiles(dir string) ([]File, error) {
 }
 
 func (f *File) ReadFile(crunchers []*Cruncher) {
-	defer log.Printf("FileInput.ReadFile => finished reading %s", f.File.Name())
+	defer func() {
+		log.Printf("FileInput.ReadFile => finished reading %s", f.File.Name())
+		for _, c := range crunchers {
+			c.Done <- c.GenerateCruncherFileName(f)
+		}
+	}()
 
 	fmt.Println("FileInput.ReadFile => opening file", f.File.Name())
 	file, err := os.Open(f.AbsolutePath)
@@ -173,9 +178,6 @@ func (f *File) ReadFile(crunchers []*Cruncher) {
 		fmt.Println("FileInput.ReadFile => closing file", f.File.Name())
 		if err = file.Close(); err != nil {
 			fmt.Printf("failed closing file %s: %s\n", f.File.Name(), err)
-		}
-		for _, c := range crunchers {
-			c.Done <- c.GenerateCruncherFileName(f)
 		}
 	}()
 
@@ -216,22 +218,15 @@ func (cr *Cruncher) Listen() {
 	for {
 		select {
 		case s := <-cr.Stream:
-			// fmt.Printf("Cruncher.Listen => cruncher arity %d => stream received from %s\n", cr.Arity, s.FileName)
-			go cr.Consume(s)
+			cc := cr.GetOrCreateCounter(s.FileName)
+			cc.AddToQueue(s.Text) // TODO konsultacije => kad ovo pretvorim u gorutinu onda se nekad desi da isprazni WG i udje u minus
 			break
 		case f := <-cr.Done:
-			// fmt.Printf("Cruncher.Listen => cruncher arity %d => done received for %s\n", cr.Arity, f)
+			fmt.Printf("Cruncher.Listen => cruncher arity %d => done received for %s\n", cr.Arity, f)
 			go cr.GetCounter(f).WriteResults(cr.Output)
 			break
 		}
 	}
-}
-
-func (cr *Cruncher) Consume(s CruncherStream) {
-	// fmt.Printf("Cruncher.Consume => cruncher arity %d => words received %d\n", cr.Arity, len(words))
-	cc := cr.GetOrCreateCounter(s.FileName)
-	cc.WaitGroup.Add(1)
-	cc.AddText(s.Text)
 }
 
 func (cr *Cruncher) GetCounter(fn string) *CruncherCounter {
@@ -249,7 +244,7 @@ func (cr *Cruncher) GetOrCreateCounter(fn string) *CruncherCounter {
 	cr.Mutex.Lock()
 	cc := cr.GetCounter(fn)
 	if cc == nil {
-		cc = NewCruncherCounter(fn)
+		cc = NewCruncherCounter(fn, cr.Arity)
 		cr.Counters = append(cr.Counters, cc)
 	}
 	cr.Mutex.Unlock()
@@ -262,38 +257,62 @@ func (cr *Cruncher) GenerateCruncherFileName(f *File) string {
 
 type CruncherCounter struct {
 	FileName  string
+	Arity     int
+	Queue     []string
 	Mutex     sync.Mutex
 	Data      map[string]int
 	WaitGroup sync.WaitGroup
 }
 
-func NewCruncherCounter(fn string) *CruncherCounter {
-	return &CruncherCounter{
+func NewCruncherCounter(fn string, arity int) *CruncherCounter {
+	cc := &CruncherCounter{
 		FileName: fn,
+		Arity:    arity,
 		Data:     make(map[string]int),
+	}
+	go cc.Consume()
+	return cc
+}
+
+func (cc *CruncherCounter) Consume() {
+	for {
+		if len(cc.Queue) < cc.Arity {
+			time.Sleep(time.Second)
+			continue
+		}
+
+		items := cc.Queue[0:cc.Arity]
+		cc.Queue = cc.Queue[1:]
+		go cc.CountWord(strings.Join(items[:], " "))
 	}
 }
 
-func (cc *CruncherCounter) AddText(text string) {
-	words := strings.Fields(text)
+func (cc *CruncherCounter) AddToQueue(text string) {
+	defer cc.Mutex.Unlock()
+	w := strings.Fields(text)
+	cc.Mutex.Lock()
+	cc.WaitGroup.Add(len(w))
+	cc.Queue = append(cc.Queue, w...)
+}
 
+func (cc *CruncherCounter) CountWord(w string) {
 	defer func() {
 		cc.WaitGroup.Done()
 		cc.Mutex.Unlock()
 	}()
 
 	cc.Mutex.Lock()
-	for _, w := range words {
-		if t, ok := cc.Data[w]; ok == false {
-			cc.Data[w] = 1
-		} else {
-			cc.Data[w] = t + 1
-		}
+	if t, ok := cc.Data[w]; ok == false {
+		cc.Data[w] = 1
+	} else {
+		cc.Data[w] = t + 1
 	}
 }
 
 func (cc *CruncherCounter) WriteResults(o *Output) {
+	fmt.Printf("CruncherCounter => WriteResults => waiting to finish all jobs for %s\n", cc.FileName)
 	cc.WaitGroup.Wait()
+	fmt.Printf("CruncherCounter => WriteResults => finished waiting for %s\n", cc.FileName)
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -316,6 +335,7 @@ func (cc *CruncherCounter) WriteResults(o *Output) {
 		return ss[i].Value > ss[j].Value
 	})
 
+	fmt.Printf("CruncherCounter => WriteResults => started streaming to output for %s\n", cc.FileName)
 	for _, s := range ss {
 		o.Stream <- OutputStream{cc.FileName, fmt.Sprintf("%s %d\n", s.Key, s.Value)}
 	}
@@ -346,13 +366,13 @@ func (o *Output) Listen() {
 		case s := <-o.Stream:
 			// fmt.Printf("Output.Listen => signal received from %s with key %s\n", s.FileName, s.Row)
 			if err := WriteToFile(s.FileName, s.Row); err != nil {
-				fmt.Println("Output.Listen => stream => error =>", err)
+				fmt.Println("Output => Listen => stream => error =>", err)
 			}
 			break
 		case d := <-o.Done:
-			fmt.Printf("Output.Listen => done received from %s\n", d)
+			fmt.Printf("Output => Listen => done received from %s\n", d)
 			if err := FinishFile(d); err != nil {
-				fmt.Println("Output.Listen => done => error =>", err)
+				fmt.Println("Output => Listen => done => error =>", err)
 			}
 			break
 		}
