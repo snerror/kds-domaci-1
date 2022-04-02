@@ -49,20 +49,6 @@ var L = 10
 func main() {
 	app = App{}
 
-	// SETUP
-	d := NewDisk("E:\\Workspace\\kds-domaci-1\\data\\disk1")
-	fi := NewFileInput(1, d, []string{"A", "B"})
-	app.inputs = append(app.inputs, fi)
-
-	c1 := NewCruncher(1)
-	// c2 := NewCruncher(2)
-	// c3 := NewCruncher(3)
-
-	fi.Crunchers = append(fi.Crunchers, c1)
-	// fi.Crunchers = append(fi.Crunchers, c2)
-	// fi.Crunchers = append(fi.Crunchers, c3)
-	// END SETUP
-
 	ctx, _ := signal.NotifyContext(context.Background(), os.Interrupt)
 	if err := run(ctx); err != nil {
 		log.Fatal(err)
@@ -71,16 +57,15 @@ func main() {
 
 func run(ctx context.Context) error {
 	fmt.Println("Application up.")
-	go app.inputs[0].Start(ctx)
-	// c := make(chan string)
-	// go CliInput(c)
+	c := make(chan string)
+	go CliInput(c)
 
 APP:
 	for {
 		select {
-		// case command := <-c:
-		// 	ExecuteCommand(command)
-		// 	break
+		case command := <-c:
+			ExecuteCommand(command)
+			break
 		case <-ctx.Done():
 			fmt.Println("Exiting application.")
 			break APP
@@ -106,6 +91,30 @@ func ExecuteCommand(command string) {
 	switch tokens[0] {
 	case "help":
 		HelpCommand()
+		break
+	case "start":
+		if len(app.inputs) == 0 {
+			fmt.Println("No inputs registered.")
+			break
+		}
+		for _, i := range app.inputs {
+			go i.Start()
+		}
+		break
+	case "debug":
+		// SETUP
+		d := NewDisk("E:\\Workspace\\kds-domaci-1\\data\\disk1")
+		fi := NewFileInput(1, d, []string{"A", "B"})
+		app.inputs = append(app.inputs, fi)
+
+		c1 := NewCruncher(1)
+		// c2 := NewCruncher(2)
+		// c3 := NewCruncher(3)
+
+		fi.Crunchers = append(fi.Crunchers, c1)
+		// fi.Crunchers = append(fi.Crunchers, c2)
+		// fi.Crunchers = append(fi.Crunchers, c3)
+		// END SETUP
 		break
 	case "cr":
 		CruncherCommand(tokens)
@@ -241,7 +250,7 @@ func NewFileInput(id int, disk *Disk, dirs []string) *FileInput {
 	}
 }
 
-func (fi *FileInput) Start(ctx context.Context) {
+func (fi *FileInput) Start() {
 	scaner := make(chan *File)
 	go fi.ScanDirs(scaner)
 
