@@ -11,35 +11,56 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 type App struct {
-	inputs []*FileInput
+	inputs    []*FileInput
+	crunchers []*Cruncher
+	disks     []*Disk
+}
+
+func (app *App) GetCruncherByArity(a int) *Cruncher {
+	for _, c := range app.crunchers {
+		if c.Arity == a {
+			return c
+		}
+	}
+
+	return nil
+}
+
+func (app *App) GetDiskByPath(path string) *Disk {
+	for _, disk := range app.disks {
+		if disk.Path == path {
+			return disk
+		}
+	}
+	return nil
 }
 
 var app App
 var o = NewOutput()
-
 var L = 10
 
 func main() {
 	app = App{}
 
 	// SETUP
-	fi := NewFileInput("", []string{"data/disk1/A"})
+	d := NewDisk("E:\\Workspace\\kds-domaci-1\\data\\disk1")
+	fi := NewFileInput(1, d, []string{"A", "B"})
 	app.inputs = append(app.inputs, fi)
 
-	// o := NewOutput()
 	c1 := NewCruncher(1)
-	c2 := NewCruncher(2)
-	c3 := NewCruncher(3)
+	// c2 := NewCruncher(2)
+	// c3 := NewCruncher(3)
 
 	fi.Crunchers = append(fi.Crunchers, c1)
-	fi.Crunchers = append(fi.Crunchers, c2)
-	fi.Crunchers = append(fi.Crunchers, c3)
+	// fi.Crunchers = append(fi.Crunchers, c2)
+	// fi.Crunchers = append(fi.Crunchers, c3)
 	// END SETUP
 
 	ctx, _ := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -51,39 +72,173 @@ func main() {
 func run(ctx context.Context) error {
 	fmt.Println("Application up.")
 	go app.inputs[0].Start(ctx)
+	// c := make(chan string)
+	// go CliInput(c)
 
 APP:
 	for {
-		<-ctx.Done()
-		fmt.Println("Exiting application.")
-		break APP
+		select {
+		// case command := <-c:
+		// 	ExecuteCommand(command)
+		// 	break
+		case <-ctx.Done():
+			fmt.Println("Exiting application.")
+			break APP
+		}
 	}
 
 	return nil
 }
 
+func CliInput(cli chan string) {
+	for {
+		reader := bufio.NewReader(os.Stdin)
+		text, _ := reader.ReadString('\n')
+		cli <- text
+	}
+}
+
+func ExecuteCommand(command string) {
+	tokens := strings.Fields(command)
+	if len(tokens) == 0 {
+		return
+	}
+	switch tokens[0] {
+	case "help":
+		HelpCommand()
+		break
+	case "cr":
+		CruncherCommand(tokens)
+		break
+	case "fi":
+		FileInputCommand(tokens)
+		break
+	default:
+		fmt.Println("Unknown command")
+		break
+	}
+}
+
+func HelpCommand() {
+	fmt.Println("Commands:")
+	fmt.Println("help								Prints help")
+	fmt.Println("cr <number>							Add cruncher")
+	fmt.Println("cr ls								List crunchers")
+	fmt.Println("fi ls								List file inputs")
+	fmt.Println("fi <disk> <dir1,dir2> <cruncher_1,cruncher_2>		Add file input")
+}
+
+func CruncherCommand(tokens []string) {
+	if len(tokens) != 2 {
+		fmt.Println("Invalid arguments")
+		return
+	}
+	if tokens[1] == "ls" {
+		if len(app.crunchers) == 0 {
+			fmt.Println("No crunchers added")
+			return
+		}
+		for _, c := range app.crunchers {
+			fmt.Printf("cruncher %d\n", c.Arity)
+		}
+		return
+	}
+	if arity, err := strconv.Atoi(tokens[1]); err == nil {
+		// TODO check if cruncher of arity exists
+		c := NewCruncher(arity)
+		app.crunchers = append(app.crunchers, c)
+		fmt.Printf("Cruncher with arity %d added \n", c.Arity)
+
+	} else {
+		fmt.Println("Failed adding cruncher")
+	}
+}
+
+func FileInputCommand(tokens []string) {
+	if len(tokens) < 2 {
+		fmt.Println("Invalid arguments")
+		return
+	}
+
+	if tokens[1] == "ls" {
+		if len(app.inputs) == 0 {
+			fmt.Println("No file inputs added")
+			return
+		}
+		for _, i := range app.inputs {
+			fmt.Printf("file input %d\n", i.Id)
+		}
+		return
+	}
+
+	if len(tokens) < 4 {
+		fmt.Println("Invalid arguments")
+		return
+	}
+
+	disk := tokens[1]
+	dirs := strings.Split(tokens[2], ",")
+	fmt.Println(dirs)
+	crunchers := strings.Split(tokens[3], ",")
+
+	d := app.GetDiskByPath(disk)
+	if d == nil {
+		d = NewDisk(disk)
+	}
+
+	fi := NewFileInput(len(app.inputs)+1, d, dirs)
+	for _, a := range crunchers {
+		if t, err := strconv.Atoi(a); err == nil {
+			if c := app.GetCruncherByArity(t); c != nil {
+				fi.Crunchers = append(fi.Crunchers, c)
+			} else {
+				fmt.Println("Invalid cruncher id", a)
+			}
+		}
+	}
+	app.inputs = append(app.inputs, fi)
+	fmt.Println("Added file input with id", fi.Id)
+}
+
+type Disk struct {
+	Path  string
+	Mutex sync.Mutex
+}
+
+func NewDisk(path string) *Disk {
+	return &Disk{
+		Path: path,
+	}
+}
+
 type File struct {
 	AbsolutePath string
 	File         fs.FileInfo
-	Finished     bool
+	Disk         *Disk
+}
+
+func NewFile(path string, file fs.FileInfo) *File {
+	return &File{
+		AbsolutePath: path,
+		File:         file,
+	}
+
 }
 
 type FileInput struct {
-	DiskPath  string
+	Id        int
+	Disk      *Disk
 	Dirs      []string
 	Files     []*File
 	Crunchers []*Cruncher
 }
 
-func NewFileInput(diskPath string, dirs []string) *FileInput {
+func NewFileInput(id int, disk *Disk, dirs []string) *FileInput {
 	return &FileInput{
-		DiskPath: diskPath,
-		Dirs:     dirs,
+		Id:   id,
+		Disk: disk,
+		Dirs: dirs,
 	}
-}
-
-func (fi *FileInput) AddCruncher() {
-
 }
 
 func (fi *FileInput) Start(ctx context.Context) {
@@ -101,7 +256,7 @@ func (fi *FileInput) Start(ctx context.Context) {
 func (fi *FileInput) ScanDirs(c chan *File) {
 	for {
 		for _, dir := range fi.Dirs {
-			files, err := getFiles(dir)
+			files, err := getFiles(fmt.Sprintf("%s/%s", fi.Disk.Path, dir))
 			if err != nil {
 				fmt.Printf("failed fetching files: %s\n", err)
 				break
@@ -117,6 +272,7 @@ func (fi *FileInput) ScanDirs(c chan *File) {
 				}
 
 				if existing == nil {
+					files[i].Disk = fi.Disk
 					fi.Files = append(fi.Files, &files[i])
 					c <- &files[i]
 					continue
@@ -150,11 +306,7 @@ func getFiles(dir string) ([]File, error) {
 			return err
 		}
 
-		files = append(files, File{
-			AbsolutePath: absoluteFilePath,
-			File:         fileInfo,
-			Finished:     false,
-		})
+		files = append(files, *NewFile(absoluteFilePath, fileInfo))
 		return nil
 	}); err != nil {
 		return nil, err
@@ -165,11 +317,16 @@ func getFiles(dir string) ([]File, error) {
 
 func (f *File) ReadFile(crunchers []*Cruncher) {
 	defer func() {
-		log.Printf("FileInput => ReadFile => finished reading %s", f.File.Name())
+		fmt.Println("FileInput => ReadFile => finished readings", f.File.Name())
+		fmt.Printf("FileInput => ReadFile => unlocking disk %s for file %s\n", f.Disk.Path, f.File.Name())
+		f.Disk.Mutex.Unlock()
 		for _, c := range crunchers {
 			c.Done <- c.GenerateCruncherFileName(f) // TODO ovo je redudantno kad zavrim nove izmene
 		}
 	}()
+
+	f.Disk.Mutex.Lock()
+	fmt.Printf("FileInput => ReadFile => locking disk %s for file %s\n", f.Disk.Path, f.File.Name())
 
 	fmt.Println("FileInput => ReadFile => opening file", f.File.Name())
 	file, err := os.Open(f.AbsolutePath)
