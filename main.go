@@ -109,6 +109,8 @@ func main() {
 
 func run(ctx context.Context) error {
 	fmt.Println("Application up.")
+	HelpCommand()
+
 	c := make(chan string)
 	go CliInput(c)
 
@@ -162,6 +164,12 @@ func ExecuteCommand(command string) {
 	case "fi":
 		FileInputCommand(tokens)
 		break
+	case "poll":
+		PrintCommand(tokens, false)
+		break
+	case "take":
+		PrintCommand(tokens, true)
+		break
 	default:
 		fmt.Println("Unknown command")
 		break
@@ -172,7 +180,10 @@ func HelpCommand() {
 	fmt.Println("Commands:")
 	fmt.Println("help								Prints help")
 	fmt.Println("start								Starts counter")
-	fmt.Println("debug								Register file inputs and crunchers")
+	fmt.Println("poll <filename>						Prints file if able")
+	fmt.Println("take <filename>						Prints file (waits if needed)")
+	fmt.Println("merge <filename1> <filename2>					Merge two results")
+	fmt.Println("scenario							Register file inputs and crunchers for scenario")
 	fmt.Println("cr <number>							Add cruncher")
 	fmt.Println("cr ls								List crunchers")
 	fmt.Println("fi ls								List file inputs")
@@ -284,6 +295,56 @@ func FileInputCommand(tokens []string) {
 	}
 	app.Inputs = append(app.Inputs, fi)
 	fmt.Println("Added file input with id", fi.Id)
+}
+
+func PrintCommand(tokens []string, block bool) {
+	if len(tokens) < 2 {
+		fmt.Println("Invalid arguments")
+		return
+	}
+
+	of := o.GetOutputFile(tokens[1])
+
+	if of == nil {
+		fmt.Println("File not found")
+		return
+	}
+
+	defer of.Mutex.Unlock()
+
+	if block {
+		fmt.Printf("Waiting for file %s to be ready\n", of.FileName)
+		of.Mutex.Lock()
+	} else {
+		if of.Mutex.TryLock() == false {
+			fmt.Printf("File %s is currently locked. Try again later\n", of.FileName)
+			return
+		}
+	}
+
+	path := fmt.Sprintf("./output/%s", of.FileName)
+
+	file, err := os.Open(path)
+	if err != nil {
+		fmt.Println("Failed opening file:", err)
+		return
+	}
+
+	defer func() {
+		if err = file.Close(); err != nil {
+			fmt.Println("Failed closing file:", err)
+		}
+	}()
+
+	scanner := bufio.NewScanner(file)
+	i := 0
+	for scanner.Scan() {
+		if i >= 20 {
+			break
+		}
+		fmt.Println(scanner.Text())
+		i++
+	}
 }
 
 type Disk struct {
@@ -583,8 +644,9 @@ func (cc *CruncherCounter) WriteResults(o *Output) {
 }
 
 type Output struct {
-	Stream chan OutputStream
-	Done   chan string
+	Stream     chan OutputStream
+	Done       chan *OutputFile
+	OutputFile []*OutputFile
 }
 
 type OutputStream struct {
@@ -595,10 +657,28 @@ type OutputStream struct {
 func NewOutput() *Output {
 	o := &Output{
 		Stream: make(chan OutputStream),
-		Done:   make(chan string),
+		Done:   make(chan *OutputFile),
 	}
 	go o.Listen()
 	return o
+}
+
+func (o *Output) GetOutputFile(fn string) *OutputFile {
+	for _, of := range o.OutputFile {
+		if of.FileName == fn {
+			return of
+		}
+	}
+	return nil
+}
+
+func (o *Output) GetOrCreateOutputFile(fn string) *OutputFile {
+	of := o.GetOutputFile(fn)
+	if of == nil {
+		of = NewOutputFile(fn)
+		o.OutputFile = append(o.OutputFile, of)
+	}
+	return of
 }
 
 func (o *Output) Listen() {
@@ -607,9 +687,9 @@ func (o *Output) Listen() {
 		case s := <-o.Stream:
 			go o.WriteToFile(&s)
 			break
-		case d := <-o.Done:
-			fmt.Printf("Output => Listen => finished writing file %s\n", d)
-			if err := FinishFile(d); err != nil {
+		case of := <-o.Done:
+			fmt.Printf("OutputFile => Listen => finished writing file %s\n", of.FileName)
+			if err := of.FinishFile(); err != nil {
 				fmt.Println("Output => Listen => done => error =>", err)
 			}
 			break
@@ -619,14 +699,17 @@ func (o *Output) Listen() {
 
 func (o *Output) WriteToFile(s *OutputStream) {
 	path := fmt.Sprintf("./output/%s-tmp", s.FileName)
+	of := o.GetOrCreateOutputFile(s.FileName)
+
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Println("Outpuit => WriteToFile => error while writing ", r)
 
 		}
-		o.Done <- s.FileName
+		o.Done <- of
 	}()
 
+	of.Mutex.Lock()
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
 	if err != nil {
 		fmt.Printf("failed creating or opening file: %s\n", err)
@@ -643,13 +726,26 @@ func (o *Output) WriteToFile(s *OutputStream) {
 	}
 }
 
-func FinishFile(fn string) error {
-	oldPath := fmt.Sprintf("./output/%s-tmp", fn)
-	newPath := fmt.Sprintf("./output/%s", fn)
+type OutputFile struct {
+	FileName string
+	Mutex    sync.Mutex
+}
+
+func NewOutputFile(fn string) *OutputFile {
+	return &OutputFile{
+		FileName: fn,
+	}
+}
+
+func (of *OutputFile) FinishFile() error {
+	oldPath := fmt.Sprintf("./output/%s-tmp", of.FileName)
+	newPath := fmt.Sprintf("./output/%s", of.FileName)
 
 	if err := os.Rename(oldPath, newPath); err != nil {
 		return fmt.Errorf("failed to rename file: %s", err)
 	}
+	fmt.Printf("OutputFile => FinishFile => Moved %s to %s\n", oldPath, newPath)
+	of.Mutex.Unlock()
 
 	return nil
 }
