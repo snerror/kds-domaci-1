@@ -15,16 +15,41 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/spf13/viper"
 )
 
+type Config struct {
+	Disks        string `mapstructure:"disks"`
+	CounterLimit string `mapstructure:"counter_data_limit"`
+}
+
+func LoadConfig() (*Config, error) {
+	viper.AddConfigPath(".")
+	viper.SetConfigName("app")
+	viper.SetConfigType("properties")
+
+	err := viper.ReadInConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	config := Config{}
+	if err = viper.Unmarshal(&config); err != nil {
+		return nil, err
+	}
+	return &config, nil
+}
+
 type App struct {
-	inputs    []*FileInput
-	crunchers []*Cruncher
-	disks     []*Disk
+	Inputs       []*FileInput
+	Crunchers    []*Cruncher
+	Disks        []*Disk
+	CounterLimit int
 }
 
 func (app *App) GetCruncherByArity(a int) *Cruncher {
-	for _, c := range app.crunchers {
+	for _, c := range app.Crunchers {
 		if c.Arity == a {
 			return c
 		}
@@ -33,8 +58,24 @@ func (app *App) GetCruncherByArity(a int) *Cruncher {
 	return nil
 }
 
+func (app *App) LoadConfig(c *Config) error {
+	disks := strings.Split(c.Disks, ";")
+	for _, d := range disks {
+		app.Disks = append(app.Disks, NewDisk(d))
+	}
+
+	l, err := strconv.Atoi(c.CounterLimit)
+	if err != nil {
+		return err
+	}
+
+	app.CounterLimit = l
+
+	return nil
+}
+
 func (app *App) GetDiskByPath(path string) *Disk {
-	for _, disk := range app.disks {
+	for _, disk := range app.Disks {
 		if disk.Path == path {
 			return disk
 		}
@@ -48,6 +89,17 @@ var L = 10
 
 func main() {
 	app = App{}
+
+	config, err := LoadConfig()
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
+
+	if err = app.LoadConfig(config); err != nil {
+		log.Fatal(err)
+		return
+	}
 
 	ctx, _ := signal.NotifyContext(context.Background(), os.Interrupt)
 	if err := run(ctx); err != nil {
@@ -93,28 +145,16 @@ func ExecuteCommand(command string) {
 		HelpCommand()
 		break
 	case "start":
-		if len(app.inputs) == 0 {
+		if len(app.Inputs) == 0 {
 			fmt.Println("No inputs registered.")
 			break
 		}
-		for _, i := range app.inputs {
+		for _, i := range app.Inputs {
 			go i.Start()
 		}
 		break
-	case "debug":
-		// SETUP
-		d := NewDisk("E:\\Workspace\\kds-domaci-1\\data\\disk1")
-		fi := NewFileInput(1, d, []string{"A", "B"})
-		app.inputs = append(app.inputs, fi)
-
-		c1 := NewCruncher(1)
-		// c2 := NewCruncher(2)
-		// c3 := NewCruncher(3)
-
-		fi.Crunchers = append(fi.Crunchers, c1)
-		// fi.Crunchers = append(fi.Crunchers, c2)
-		// fi.Crunchers = append(fi.Crunchers, c3)
-		// END SETUP
+	case "scenario":
+		ScenarioCommand(tokens)
 		break
 	case "cr":
 		CruncherCommand(tokens)
@@ -131,10 +171,47 @@ func ExecuteCommand(command string) {
 func HelpCommand() {
 	fmt.Println("Commands:")
 	fmt.Println("help								Prints help")
+	fmt.Println("start								Starts counter")
+	fmt.Println("debug								Register file inputs and crunchers")
 	fmt.Println("cr <number>							Add cruncher")
 	fmt.Println("cr ls								List crunchers")
 	fmt.Println("fi ls								List file inputs")
-	fmt.Println("fi <disk> <dir1,dir2> <cruncher_1,cruncher_2>		Add file input")
+	fmt.Println("fi <disk> <dir1,dir2> <cruncher_1,cruncher_2>			Add file input")
+}
+
+func ScenarioCommand(tokens []string) {
+	if len(tokens) == 1 {
+		fmt.Println("Invalid number of arguments")
+		return
+	}
+	switch tokens[1] {
+	case "1":
+		fi1 := NewFileInput(1, app.Disks[0], []string{"A"})
+
+		app.Inputs = append(app.Inputs, fi1)
+
+		c1 := NewCruncher(1)
+
+		fi1.Crunchers = append(fi1.Crunchers, c1)
+		fmt.Println("Scenario 1 loaded")
+		break
+	case "2":
+		fi1 := NewFileInput(1, app.Disks[0], []string{"A", "B"})
+		fi2 := NewFileInput(2, app.Disks[1], []string{"C", "D"})
+		app.Inputs = append(app.Inputs, fi1)
+		app.Inputs = append(app.Inputs, fi2)
+
+		c1 := NewCruncher(1)
+
+		fi1.Crunchers = append(fi1.Crunchers, c1)
+		fi2.Crunchers = append(fi2.Crunchers, c1)
+		fmt.Println("Scenario 2 loaded")
+		break
+	default:
+		fmt.Println("Unknown scenario")
+
+	}
+
 }
 
 func CruncherCommand(tokens []string) {
@@ -143,11 +220,11 @@ func CruncherCommand(tokens []string) {
 		return
 	}
 	if tokens[1] == "ls" {
-		if len(app.crunchers) == 0 {
+		if len(app.Crunchers) == 0 {
 			fmt.Println("No crunchers added")
 			return
 		}
-		for _, c := range app.crunchers {
+		for _, c := range app.Crunchers {
 			fmt.Printf("cruncher %d\n", c.Arity)
 		}
 		return
@@ -155,7 +232,7 @@ func CruncherCommand(tokens []string) {
 	if arity, err := strconv.Atoi(tokens[1]); err == nil {
 		// TODO check if cruncher of arity exists
 		c := NewCruncher(arity)
-		app.crunchers = append(app.crunchers, c)
+		app.Crunchers = append(app.Crunchers, c)
 		fmt.Printf("Cruncher with arity %d added \n", c.Arity)
 
 	} else {
@@ -170,11 +247,11 @@ func FileInputCommand(tokens []string) {
 	}
 
 	if tokens[1] == "ls" {
-		if len(app.inputs) == 0 {
+		if len(app.Inputs) == 0 {
 			fmt.Println("No file inputs added")
 			return
 		}
-		for _, i := range app.inputs {
+		for _, i := range app.Inputs {
 			fmt.Printf("file input %d\n", i.Id)
 		}
 		return
@@ -195,7 +272,7 @@ func FileInputCommand(tokens []string) {
 		d = NewDisk(disk)
 	}
 
-	fi := NewFileInput(len(app.inputs)+1, d, dirs)
+	fi := NewFileInput(len(app.Inputs)+1, d, dirs)
 	for _, a := range crunchers {
 		if t, err := strconv.Atoi(a); err == nil {
 			if c := app.GetCruncherByArity(t); c != nil {
@@ -205,7 +282,7 @@ func FileInputCommand(tokens []string) {
 			}
 		}
 	}
-	app.inputs = append(app.inputs, fi)
+	app.Inputs = append(app.Inputs, fi)
 	fmt.Println("Added file input with id", fi.Id)
 }
 
