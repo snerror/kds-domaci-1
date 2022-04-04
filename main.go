@@ -463,41 +463,27 @@ func getFiles(dir string) ([]File, error) {
 }
 
 func (f *File) ReadFile(crunchers []*Cruncher) {
-	defer func() {
-		fmt.Println("FileInput => ReadFile => finished readings", f.File.Name())
-		fmt.Printf("FileInput => ReadFile => unlocking disk %s for file %s\n", f.Disk.Path, f.File.Name())
-		f.Disk.Mutex.Unlock()
-		for _, c := range crunchers {
-			c.Done <- c.GenerateCruncherFileName(f) // TODO ovo je redudantno kad zavrim nove izmene
-		}
-	}()
-
 	f.Disk.Mutex.Lock()
 	fmt.Printf("FileInput => ReadFile => locking disk %s for file %s\n", f.Disk.Path, f.File.Name())
 
-	fmt.Println("FileInput => ReadFile => opening file", f.File.Name())
-	file, err := os.Open(f.AbsolutePath)
+	text, err := readFile(f.AbsolutePath)
 	if err != nil {
-		fmt.Printf("FileInput => Read File => failed reading file %s: %s\n", f.File.Name(), err)
+		fmt.Printf("FileInput => ReadFile => failed reading file %s: %s\n", f.File.Name(), err)
+		f.Disk.Mutex.Unlock()
 		return
 	}
 
-	defer func() {
-		fmt.Println("FileInput => ReadFile => closing file", f.File.Name())
-		if err = file.Close(); err != nil {
-			fmt.Printf("FileInput => Read File => failed closing file %s: %s\n", f.File.Name(), err)
-		}
-	}()
-
-	text := ""
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		text += scanner.Text()
-	}
-
 	for _, c := range crunchers {
-		c.Stream <- CruncherStream{c.GenerateCruncherFileName(f), fmt.Sprint(text)}
+		c.Stream <- CruncherStream{c.GenerateCruncherFileName(f), text}
 	}
+
+	fmt.Printf("FileInput => ReadFile => unlocking disk %s for file %s\n", f.Disk.Path, f.File.Name())
+
+	f.Disk.Mutex.Unlock()
+	for _, c := range crunchers {
+		c.Done <- c.GenerateCruncherFileName(f) // TODO ovo je redudantno kad zavrim nove izmene
+	}
+	fmt.Println("FileInput => ReadFile => finished readings", f.File.Name())
 }
 
 type Cruncher struct {
@@ -777,4 +763,27 @@ func mergeMaps(m1 map[string]int, m2 map[string]int) map[string]int {
 		}
 	}
 	return m1
+}
+
+func readFile(path string) (string, error) {
+	fmt.Println("FileInput => ReadFile => opening file", path)
+
+	file, err := os.Open(path)
+	if err != nil {
+		fmt.Printf("FileInput => Read File => failed reading file %s: %s\n", path, err)
+		return "", err
+	}
+
+	text := ""
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		text += scanner.Text()
+	}
+
+	if err = file.Close(); err != nil {
+		fmt.Printf("FileInput => Read File => failed closing file %s: %s\n", path, err)
+		return text, err
+	}
+
+	return text, nil
 }
