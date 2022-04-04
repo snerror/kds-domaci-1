@@ -926,6 +926,12 @@ func (o *Output) MergeFiles(fn string) {
 			fmt.Println("Output => MergeFiles => file not found")
 			return
 		}
+		for _, temp := range ofs {
+			if temp == t {
+				fmt.Println("Output => MergeFiles => duplicate found, cannot merge two same files")
+				return
+			}
+		}
 		ofs = append(ofs, t)
 	}
 
