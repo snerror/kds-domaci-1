@@ -20,8 +20,9 @@ import (
 )
 
 type Config struct {
-	Disks        string `mapstructure:"disks"`
-	CounterLimit string `mapstructure:"counter_data_limit"`
+	Disks              string `mapstructure:"disks"`
+	CounterLimit       string `mapstructure:"counter_data_limit"`
+	FileInputSleepTime string `mapstructure:"file_input_sleep_time"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -42,10 +43,11 @@ func LoadConfig() (*Config, error) {
 }
 
 type App struct {
-	Inputs       []*FileInput
-	Crunchers    []*Cruncher
-	Disks        []*Disk
-	CounterLimit int
+	Inputs             []*FileInput
+	Crunchers          []*Cruncher
+	Disks              []*Disk
+	CounterLimit       int
+	FileInputSleepTime int
 }
 
 func (app *App) GetCruncherByArity(a int) *Cruncher {
@@ -69,7 +71,13 @@ func (app *App) LoadConfig(c *Config) error {
 		return err
 	}
 
+	s, err := strconv.Atoi(c.FileInputSleepTime)
+	if err != nil {
+		return err
+	}
+
 	app.CounterLimit = l
+	app.FileInputSleepTime = s
 
 	return nil
 }
@@ -449,7 +457,7 @@ func (fi *FileInput) ScanDirs(c chan *File) {
 				}
 			}
 		}
-		time.Sleep(time.Second)
+		time.Sleep(time.Millisecond * time.Duration(app.FileInputSleepTime))
 	}
 }
 
@@ -527,11 +535,9 @@ func NewCruncher(arity int) *Cruncher {
 }
 
 func (cr *Cruncher) CrunchFile(s *CruncherStream) {
-	words := strings.Fields(s.Text)
-	divided := splitText(words, L)
-
+	splitWords := createTextChunks(s.Text, app.CounterLimit)
 	cc := cr.GetOrCreateCounter(s.FileName)
-	for _, d := range divided {
+	for _, d := range splitWords {
 		go cc.CountSegment(s.FileName, d)
 	}
 	cc.WriteResults()
@@ -611,7 +617,7 @@ func (cc *CruncherCounter) CountSegment(fn string, words []string) {
 			m[w] = t + 1
 		}
 	}
-	fmt.Printf("CruncherCounter => CountSegment => finished counting segment with result length %d for %s\n", len(m), fn)
+	fmt.Printf("CruncherCounter => CountSegment => finished counting segment with word length %d for %s\n", len(m), fn)
 	cc.Done <- m
 }
 
@@ -810,4 +816,25 @@ func mapToKVSorted(m map[string]int) []*KeyValue {
 		return ss[i].Value > ss[j].Value
 	})
 	return ss
+}
+
+func createTextChunks(text string, chunk int) [][]string {
+	results := [][]string{}
+	words := strings.Fields(text)
+	counter := chunk
+	curr := []string{}
+	for _, w := range words {
+		curr = append(curr, w)
+		counter -= len(w)
+		if counter < 0 {
+			t := curr
+			results = append(results, t)
+			counter = chunk
+			curr = []string{}
+		}
+	}
+	if len(curr) > 0 {
+		results = append(results, curr)
+	}
+	return results
 }
