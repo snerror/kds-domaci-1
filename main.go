@@ -973,6 +973,11 @@ func (of *OutputFile) WriteToFile() {
 	}()
 
 	of.Mutex.Lock()
+	err := os.MkdirAll("./output", 0755)
+	if err != nil {
+		fmt.Printf("failed creating or opening file: %s\n", err)
+		return
+	}
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0644)
 	if err != nil {
 		fmt.Printf("failed creating or opening file: %s\n", err)
