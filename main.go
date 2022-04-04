@@ -82,6 +82,26 @@ func (app *App) GetDiskByPath(path string) *Disk {
 	return nil
 }
 
+func (app *App) GetOrCreateDisk(path string) *Disk {
+	d := app.GetDiskByPath(path)
+	if d == nil {
+		d = NewDisk(path)
+		app.Disks = append(app.Disks, d)
+	}
+	return d
+}
+
+func (app *App) GetFileInputById(id int) *FileInput {
+	found := (*FileInput)(nil)
+	for _, fi := range app.Inputs {
+		if fi.Id == id {
+			found = fi
+			break
+		}
+	}
+	return found
+}
+
 var app App
 var o = NewOutput()
 
@@ -189,7 +209,12 @@ func HelpCommand() {
 	fmt.Println("cr <number>							Add cruncher")
 	fmt.Println("cr ls								List crunchers")
 	fmt.Println("fi ls								List file inputs")
-	fmt.Println("fi <disk> <dir1,dir2...> <cruncher_1,cruncher_2...>			Add file input")
+	fmt.Println("fi create <disk>						Creates FileInput for disk")
+	fmt.Println("fi cr add <fileinput> <cruncher>				Adds cruncher to FileInput")
+	fmt.Println("fi cr remove <fileinput> <cruncher>				Removes cruncher from FileInput")
+	fmt.Println("fi dir add <fileinput> <dir>					Adds dir to FileInput")
+	fmt.Println("fi dir remove <fileinput> <dir>					Removes dir from FileInput")
+	fmt.Println("fi <disk> <dir1,dir2...> <cruncher_1,cruncher_2...>		Add file input")
 	fmt.Println("outputs								Lists all output files")
 }
 
@@ -200,7 +225,7 @@ func ScenarioCommand(tokens []string) {
 	}
 	switch tokens[1] {
 	case "1":
-		fi1 := NewFileInput(1, app.Disks[0], []string{"A"})
+		fi1 := NewFileInput(1, app.Disks[0])
 
 		app.Inputs = append(app.Inputs, fi1)
 
@@ -210,8 +235,8 @@ func ScenarioCommand(tokens []string) {
 		fmt.Println("Scenario 1 loaded")
 		break
 	case "2":
-		fi1 := NewFileInput(1, app.Disks[0], []string{"."})
-		fi2 := NewFileInput(2, app.Disks[1], []string{"."})
+		fi1 := NewFileInput(1, app.Disks[0])
+		fi2 := NewFileInput(2, app.Disks[1])
 		app.Inputs = append(app.Inputs, fi1)
 		app.Inputs = append(app.Inputs, fi2)
 
@@ -222,8 +247,8 @@ func ScenarioCommand(tokens []string) {
 		fmt.Println("Scenario 2 loaded")
 		break
 	case "3":
-		fi1 := NewFileInput(1, app.Disks[0], []string{"."})
-		fi2 := NewFileInput(2, app.Disks[1], []string{"."})
+		fi1 := NewFileInput(1, app.Disks[0])
+		fi2 := NewFileInput(2, app.Disks[1])
 		app.Inputs = append(app.Inputs, fi1)
 		app.Inputs = append(app.Inputs, fi2)
 
@@ -274,44 +299,121 @@ func FileInputCommand(tokens []string) {
 		return
 	}
 
-	if tokens[1] == "ls" {
+	switch tokens[1] {
+	case "ls":
+		goto FIList
+	case "create":
+		goto FICreate
+	case "cr":
+		goto FICruncher
+	case "dir":
+		goto FIDir
+	default:
+		fmt.Println("Unknown command")
+
+	}
+
+FIList:
+	{
 		if len(app.Inputs) == 0 {
 			fmt.Println("No file inputs added")
 			return
 		}
 		for _, i := range app.Inputs {
-			fmt.Printf("file input %d\n", i.Id)
+			fmt.Printf("FILE INPUT\n")
+			fmt.Printf("- Id => %d\n", i.Id)
+			fmt.Printf("- DiskPath => %s\n", i.Disk.Path)
+			fmt.Printf("- Dirs => %d\n", len(i.Dirs))
+			fmt.Printf("- Crunchers => %d\n", len(i.Crunchers))
 		}
 		return
 	}
-
-	if len(tokens) < 4 {
-		fmt.Println("Invalid arguments")
+FICreate:
+	{
+		if len(tokens) != 3 {
+			fmt.Println("Missing dirs")
+			return
+		}
+		d := app.GetOrCreateDisk(tokens[2])
+		fi := NewFileInput(len(app.Inputs)+1, d)
+		app.Inputs = append(app.Inputs, fi)
+		fmt.Println("FileInput added")
 		return
 	}
-
-	disk := tokens[1]
-	dirs := strings.Split(tokens[2], ",")
-	fmt.Println(dirs)
-	crunchers := strings.Split(tokens[3], ",")
-
-	d := app.GetDiskByPath(disk)
-	if d == nil {
-		d = NewDisk(disk)
-	}
-
-	fi := NewFileInput(len(app.Inputs)+1, d, dirs)
-	for _, a := range crunchers {
-		if t, err := strconv.Atoi(a); err == nil {
-			if c := app.GetCruncherByArity(t); c != nil {
-				fi.Crunchers = append(fi.Crunchers, c)
-			} else {
-				fmt.Println("Invalid cruncher id", a)
-			}
+FICruncher:
+	{
+		if len(tokens) != 5 {
+			fmt.Println("Missing args")
+			return
 		}
+
+		fiId, err := strconv.Atoi(tokens[3])
+		if err != nil {
+			fmt.Println("Unknown FileInput Id")
+			return
+		}
+		crAr, err := strconv.Atoi(tokens[4])
+		if err != nil {
+			fmt.Println("Unknown Cruncher Arity")
+			return
+		}
+
+		fi := app.GetFileInputById(fiId)
+		if fi == nil {
+			fmt.Println("No FileInput found with id", fiId)
+			return
+		}
+		cr := app.GetCruncherByArity(crAr)
+		if cr == nil {
+			fmt.Println("No cruncher found with arity", crAr)
+			return
+		}
+
+		switch tokens[2] {
+		case "remove":
+			fi.RemoveCruncher(cr)
+			break
+		case "add":
+			fi.AddCruncher(cr)
+			break
+		default:
+			fmt.Println("Unknown command")
+		}
+		return
 	}
-	app.Inputs = append(app.Inputs, fi)
-	fmt.Println("Added file input with id", fi.Id)
+FIDir:
+	{
+		if len(tokens) != 5 {
+			fmt.Println("Missing args")
+			return
+		}
+
+		fiId, err := strconv.Atoi(tokens[3])
+		if err != nil {
+			fmt.Println("Unknown FileInput Id")
+			return
+		}
+
+		fi := app.GetFileInputById(fiId)
+		if fi == nil {
+			fmt.Println("No FileInput found with id", fiId)
+			return
+		}
+
+		dir := tokens[4]
+
+		switch tokens[2] {
+		case "remove":
+			fi.RemoveDir(dir)
+			break
+		case "add":
+			fi.AddDir(dir)
+			break
+		default:
+			fmt.Println("Unknown command")
+		}
+		return
+	}
 }
 
 func PrintCommand(tokens []string, block bool) {
@@ -406,12 +508,75 @@ type FileInput struct {
 	Crunchers []*Cruncher
 }
 
-func NewFileInput(id int, disk *Disk, dirs []string) *FileInput {
+func NewFileInput(id int, disk *Disk) *FileInput {
 	return &FileInput{
 		Id:   id,
 		Disk: disk,
-		Dirs: dirs,
+		Dirs: make([]string, 0),
 	}
+}
+
+func (fi *FileInput) IsCruncherAdded(cr *Cruncher) bool {
+	for _, c := range fi.Crunchers {
+		if c == cr {
+			return true
+		}
+	}
+	return false
+}
+
+func (fi *FileInput) AddCruncher(cr *Cruncher) {
+	if c := fi.IsCruncherAdded(cr); c == true {
+		fmt.Printf("Cruncher %d already added to FileInput %d\n", cr.Arity, fi.Id)
+		return
+	}
+	fi.Crunchers = append(fi.Crunchers, cr)
+	fmt.Printf("Cruncher %d added to FileInput %d\n", cr.Arity, fi.Id)
+}
+
+func (fi *FileInput) RemoveCruncher(cr *Cruncher) {
+	if c := fi.IsCruncherAdded(cr); c == false {
+		fmt.Printf("Cruncher %d is not added to FileInput %d\n", cr.Arity, fi.Id)
+		return
+	}
+
+	for i, c := range fi.Crunchers {
+		if c == cr {
+			fi.Crunchers = append(fi.Crunchers[:i], fi.Crunchers[i+1:]...)
+		}
+	}
+	fmt.Printf("Cruncher %d removed from FileInput %d\n", cr.Arity, fi.Id)
+}
+
+func (fi *FileInput) IsDirAdded(dir string) bool {
+	for _, d := range fi.Dirs {
+		if dir == d {
+			return true
+		}
+	}
+	return false
+}
+
+func (fi *FileInput) AddDir(dir string) {
+	if d := fi.IsDirAdded(dir); d == true {
+		fmt.Printf("Dir %s already added to FileInput %d\n", dir, fi.Id)
+		return
+	}
+	fi.Dirs = append(fi.Dirs, dir)
+	fmt.Printf("Dir %s added to FileInput %d\n", dir, fi.Id)
+}
+
+func (fi *FileInput) RemoveDir(dir string) {
+	if d := fi.IsDirAdded(dir); d == false {
+		fmt.Printf("Dir %s is not added to FileInput %d\n", dir, fi.Id)
+		return
+	}
+	for i, d := range fi.Dirs {
+		if d == dir {
+			fi.Dirs = append(fi.Dirs[:i], fi.Dirs[i+1:]...)
+		}
+	}
+	fmt.Printf("Dir %s removed from FileInput %d\n", dir, fi.Id)
 }
 
 func (fi *FileInput) Start() {
@@ -419,7 +584,6 @@ func (fi *FileInput) Start() {
 	go fi.ScanDirs(scaner)
 
 	for {
-		// SEKVENCIJALNO AKO SU SA ISTOG DISKA
 		f := <-scaner
 		fmt.Println("FileInput => Start => file found", f.File.Name())
 		go f.ReadFile(fi.Crunchers)
