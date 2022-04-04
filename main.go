@@ -144,7 +144,7 @@ func ExecuteCommand(command string) {
 	}
 	switch tokens[0] {
 	case "help":
-		HelpCommand()
+		go HelpCommand()
 		break
 	case "start":
 		if len(app.Inputs) == 0 {
@@ -156,22 +156,22 @@ func ExecuteCommand(command string) {
 		}
 		break
 	case "scenario":
-		ScenarioCommand(tokens)
+		go ScenarioCommand(tokens)
 		break
 	case "cr":
-		CruncherCommand(tokens)
+		go CruncherCommand(tokens)
 		break
 	case "fi":
-		FileInputCommand(tokens)
+		go FileInputCommand(tokens)
 		break
 	case "poll":
-		PrintCommand(tokens, false)
+		go PrintCommand(tokens, false)
 		break
 	case "take":
-		PrintCommand(tokens, true)
+		go PrintCommand(tokens, true)
 		break
 	case "merge":
-		MergeCommand(tokens)
+		go MergeCommand(tokens)
 		break
 	case "outputs":
 		for _, of := range o.OutputFile {
@@ -574,15 +574,8 @@ type CruncherCounter struct {
 	FileName  string
 	Arity     int
 	Done      chan (map[string]int)
-	Queue     []string
-	Mutex     sync.Mutex
 	Data      map[string]int
 	WaitGroup sync.WaitGroup
-}
-
-type KeyValue struct {
-	Key   string
-	Value int
 }
 
 func NewCruncherCounter(fn string, arity int) *CruncherCounter {
@@ -594,6 +587,14 @@ func NewCruncherCounter(fn string, arity int) *CruncherCounter {
 	}
 	go cc.Listen()
 	return cc
+}
+
+func (cc *CruncherCounter) Listen() {
+	for {
+		m := <-cc.Done
+		mergeMaps(cc.Data, m)
+		cc.WaitGroup.Done()
+	}
 }
 
 func (cc *CruncherCounter) CountSegment(fn string, words []string) {
@@ -614,20 +615,17 @@ func (cc *CruncherCounter) CountSegment(fn string, words []string) {
 	cc.Done <- m
 }
 
-func (cc *CruncherCounter) Listen() {
-	for {
-		m := <-cc.Done
-		mergeMaps(cc.Data, m)
-		cc.WaitGroup.Done()
-	}
-}
-
 func (cc *CruncherCounter) WriteResults() {
 	fmt.Printf("CruncherCounter => WriteResults => waiting to finish all jobs for %s\n", cc.FileName)
 	cc.WaitGroup.Wait()
 	fmt.Printf("CruncherCounter => WriteResults => finished waiting for %s\n", cc.FileName)
 	fmt.Printf("CruncherCounter => WriteResults => started streaming to output for %s\n", cc.FileName)
 	o.Stream <- OutputStream{cc.FileName, cc.Data}
+	cc.ResetData()
+}
+
+func (cc *CruncherCounter) ResetData() {
+	cc.Data = make(map[string]int)
 }
 
 type Output struct {
@@ -725,7 +723,7 @@ func (of *OutputFile) WriteToFile() {
 	}()
 
 	of.Mutex.Lock()
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0644)
 	if err != nil {
 		fmt.Printf("failed creating or opening file: %s\n", err)
 		return
@@ -741,6 +739,8 @@ func (of *OutputFile) WriteToFile() {
 			return
 		}
 	}
+
+	time.Sleep(time.Second * 30)
 }
 
 func splitText(words []string, num int) [][]string {
@@ -793,6 +793,11 @@ func readFile(path string) (string, error) {
 	}
 
 	return text, nil
+}
+
+type KeyValue struct {
+	Key   string
+	Value int
 }
 
 func mapToKVSorted(m map[string]int) []*KeyValue {
