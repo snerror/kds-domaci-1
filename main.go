@@ -170,6 +170,14 @@ func ExecuteCommand(command string) {
 	case "take":
 		PrintCommand(tokens, true)
 		break
+	case "merge":
+		MergeCommand(tokens)
+		break
+	case "outputs":
+		for _, of := range o.OutputFile {
+			fmt.Println(of.FileName)
+		}
+		break
 	default:
 		fmt.Println("Unknown command")
 		break
@@ -188,6 +196,7 @@ func HelpCommand() {
 	fmt.Println("cr ls								List crunchers")
 	fmt.Println("fi ls								List file inputs")
 	fmt.Println("fi <disk> <dir1,dir2> <cruncher_1,cruncher_2>			Add file input")
+	fmt.Println("outputs								Lists all output files")
 }
 
 func ScenarioCommand(tokens []string) {
@@ -220,7 +229,6 @@ func ScenarioCommand(tokens []string) {
 		break
 	default:
 		fmt.Println("Unknown scenario")
-
 	}
 
 }
@@ -345,6 +353,15 @@ func PrintCommand(tokens []string, block bool) {
 		fmt.Println(scanner.Text())
 		i++
 	}
+}
+
+func MergeCommand(tokens []string) {
+	if len(tokens) < 3 {
+		fmt.Println("Invalid arguments")
+		return
+	}
+
+	o.MergeFiles(tokens[1], tokens[2])
 }
 
 type Disk struct {
@@ -517,7 +534,7 @@ func (cr *Cruncher) CrunchFile(s *CruncherStream) {
 	for _, d := range divided {
 		go cc.CountSegment(s.FileName, d)
 	}
-	cc.WriteResults(o)
+	cc.WriteResults()
 }
 
 func (cr *Cruncher) Listen() {
@@ -605,28 +622,12 @@ func (cc *CruncherCounter) Listen() {
 	}
 }
 
-func (cc *CruncherCounter) WriteResults(o *Output) {
+func (cc *CruncherCounter) WriteResults() {
 	fmt.Printf("CruncherCounter => WriteResults => waiting to finish all jobs for %s\n", cc.FileName)
 	cc.WaitGroup.Wait()
 	fmt.Printf("CruncherCounter => WriteResults => finished waiting for %s\n", cc.FileName)
-
-	defer func() {
-		if r := recover(); r != nil {
-			fmt.Println("Recovered in f", r)
-		}
-	}()
-
-	var ss []*KeyValue
-	for k, v := range cc.Data {
-		ss = append(ss, &KeyValue{k, v})
-	}
-
-	sort.Slice(ss, func(i, j int) bool {
-		return ss[i].Value > ss[j].Value
-	})
-
 	fmt.Printf("CruncherCounter => WriteResults => started streaming to output for %s\n", cc.FileName)
-	o.Stream <- OutputStream{cc.FileName, ss}
+	o.Stream <- OutputStream{cc.FileName, cc.Data}
 }
 
 type Output struct {
@@ -637,7 +638,7 @@ type Output struct {
 
 type OutputStream struct {
 	FileName string
-	Data     []*KeyValue
+	Data     map[string]int
 }
 
 func NewOutput() *Output {
@@ -671,28 +672,56 @@ func (o *Output) Listen() {
 	for {
 		select {
 		case s := <-o.Stream:
-			go o.WriteToFile(&s)
-			break
-		case of := <-o.Done:
-			fmt.Printf("OutputFile => Listen => finished writing file %s\n", of.FileName)
-			if err := of.FinishFile(); err != nil {
-				fmt.Println("Output => Listen => done => error =>", err)
-			}
+			of := o.GetOrCreateOutputFile(s.FileName)
+			of.Data = s.Data
+			go of.WriteToFile()
 			break
 		}
 	}
 }
 
-func (o *Output) WriteToFile(s *OutputStream) {
-	path := fmt.Sprintf("./output/%s-tmp", s.FileName)
-	of := o.GetOrCreateOutputFile(s.FileName)
+func (o *Output) MergeFiles(fn1 string, fn2 string) {
+	of1 := o.GetOutputFile(fn1)
+	of2 := o.GetOutputFile(fn2)
+
+	if of1 == nil || of2 == nil {
+		fmt.Println("Output => MergeFiles => one or both file names invalid", fn1, fn2)
+		return
+	}
+
+	defer func() {
+		of1.Mutex.Unlock()
+		of2.Mutex.Unlock()
+	}()
+
+	of1.Mutex.Lock()
+	of2.Mutex.Lock()
+	of := o.GetOrCreateOutputFile(fmt.Sprintf("%s-%s", of1.FileName, of2.FileName))
+	of.Data = mergeMaps(of1.Data, of2.Data)
+	of.WriteToFile()
+}
+
+type OutputFile struct {
+	FileName string
+	Data     map[string]int
+	Mutex    sync.Mutex
+}
+
+func NewOutputFile(fn string) *OutputFile {
+	return &OutputFile{
+		FileName: fn,
+	}
+}
+
+func (of *OutputFile) WriteToFile() {
+	path := fmt.Sprintf("./output/%s", of.FileName)
 
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Println("Outpuit => WriteToFile => error while writing ", r)
-
 		}
-		o.Done <- of
+		fmt.Printf("OutputFile => WriteToFile => finished writing %s\n", path)
+		of.Mutex.Unlock()
 	}()
 
 	of.Mutex.Lock()
@@ -704,36 +733,14 @@ func (o *Output) WriteToFile(s *OutputStream) {
 
 	defer f.Close()
 
-	for _, s := range s.Data {
+	sorted := mapToKVSorted(of.Data)
+
+	for _, s := range sorted {
 		if _, err = f.WriteString(fmt.Sprintf("%s %d\n", s.Key, s.Value)); err != nil {
 			fmt.Printf("failed to write to file: %s\n", err)
 			return
 		}
 	}
-}
-
-type OutputFile struct {
-	FileName string
-	Mutex    sync.Mutex
-}
-
-func NewOutputFile(fn string) *OutputFile {
-	return &OutputFile{
-		FileName: fn,
-	}
-}
-
-func (of *OutputFile) FinishFile() error {
-	oldPath := fmt.Sprintf("./output/%s-tmp", of.FileName)
-	newPath := fmt.Sprintf("./output/%s", of.FileName)
-
-	if err := os.Rename(oldPath, newPath); err != nil {
-		return fmt.Errorf("failed to rename file: %s", err)
-	}
-	fmt.Printf("OutputFile => FinishFile => Moved %s to %s\n", oldPath, newPath)
-	of.Mutex.Unlock()
-
-	return nil
 }
 
 func splitText(words []string, num int) [][]string {
@@ -786,4 +793,16 @@ func readFile(path string) (string, error) {
 	}
 
 	return text, nil
+}
+
+func mapToKVSorted(m map[string]int) []*KeyValue {
+	var ss []*KeyValue
+	for k, v := range m {
+		ss = append(ss, &KeyValue{k, v})
+	}
+
+	sort.Slice(ss, func(i, j int) bool {
+		return ss[i].Value > ss[j].Value
+	})
+	return ss
 }
