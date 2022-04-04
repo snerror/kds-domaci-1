@@ -214,7 +214,6 @@ func HelpCommand() {
 	fmt.Println("fi cr remove <fileinput> <cruncher>				Removes cruncher from FileInput")
 	fmt.Println("fi dir add <fileinput> <dir>					Adds dir to FileInput")
 	fmt.Println("fi dir remove <fileinput> <dir>					Removes dir from FileInput")
-	fmt.Println("fi <disk> <dir1,dir2...> <cruncher_1,cruncher_2...>		Add file input")
 	fmt.Println("outputs								Lists all output files")
 }
 
@@ -226,12 +225,14 @@ func ScenarioCommand(tokens []string) {
 	switch tokens[1] {
 	case "1":
 		fi1 := NewFileInput(1, app.Disks[0])
-
 		app.Inputs = append(app.Inputs, fi1)
 
 		c1 := NewCruncher(1)
+		app.Crunchers = append(app.Crunchers, c1)
 
-		fi1.Crunchers = append(fi1.Crunchers, c1)
+		fi1.AddCruncher(c1)
+		fi1.AddDir("A")
+
 		fmt.Println("Scenario 1 loaded")
 		break
 	case "2":
@@ -241,25 +242,81 @@ func ScenarioCommand(tokens []string) {
 		app.Inputs = append(app.Inputs, fi2)
 
 		c1 := NewCruncher(1)
+		app.Crunchers = append(app.Crunchers, c1)
 
-		fi1.Crunchers = append(fi1.Crunchers, c1)
-		fi2.Crunchers = append(fi2.Crunchers, c1)
+		fi1.AddCruncher(c1)
+		fi2.AddCruncher(c1)
+
 		fmt.Println("Scenario 2 loaded")
 		break
 	case "3":
 		fi1 := NewFileInput(1, app.Disks[0])
-		fi2 := NewFileInput(2, app.Disks[1])
 		app.Inputs = append(app.Inputs, fi1)
-		app.Inputs = append(app.Inputs, fi2)
 
 		c1 := NewCruncher(1)
+		app.Crunchers = append(app.Crunchers, c1)
 		c2 := NewCruncher(2)
+		app.Crunchers = append(app.Crunchers, c2)
 
-		fi1.Crunchers = append(fi1.Crunchers, c1)
-		fi2.Crunchers = append(fi2.Crunchers, c1)
-		fi1.Crunchers = append(fi1.Crunchers, c2)
-		fi2.Crunchers = append(fi2.Crunchers, c2)
+		fi1.AddCruncher(c1)
+		fi1.AddCruncher(c2)
 		fmt.Println("Scenario 3 loaded")
+		break
+	case "4":
+		fi1 := NewFileInput(1, app.Disks[0])
+		app.Inputs = append(app.Inputs, fi1)
+
+		c1 := NewCruncher(1)
+		app.Crunchers = append(app.Crunchers, c1)
+		c2 := NewCruncher(2)
+		app.Crunchers = append(app.Crunchers, c2)
+
+		fi1.AddCruncher(c1)
+		fmt.Println("Scenario 4 loaded")
+		break
+	case "overkill":
+		fi1 := NewFileInput(1, app.Disks[0])
+		app.Inputs = append(app.Inputs, fi1)
+		fi2 := NewFileInput(2, app.Disks[0])
+		app.Inputs = append(app.Inputs, fi2)
+		fi3 := NewFileInput(3, app.Disks[1])
+		app.Inputs = append(app.Inputs, fi3)
+		fi4 := NewFileInput(4, app.Disks[1])
+		app.Inputs = append(app.Inputs, fi4)
+
+		c1 := NewCruncher(1)
+		app.Crunchers = append(app.Crunchers, c1)
+		c2 := NewCruncher(2)
+		app.Crunchers = append(app.Crunchers, c2)
+		c3 := NewCruncher(3)
+		app.Crunchers = append(app.Crunchers, c3)
+		c4 := NewCruncher(4)
+		app.Crunchers = append(app.Crunchers, c4)
+		c5 := NewCruncher(5)
+		app.Crunchers = append(app.Crunchers, c5)
+
+		fi1.AddCruncher(c1)
+		fi1.AddCruncher(c2)
+		fi1.AddCruncher(c3)
+		fi1.AddCruncher(c4)
+		fi1.AddCruncher(c5)
+		fi2.AddCruncher(c1)
+		fi2.AddCruncher(c2)
+		fi2.AddCruncher(c3)
+		fi2.AddCruncher(c4)
+		fi2.AddCruncher(c5)
+		fi3.AddCruncher(c1)
+		fi3.AddCruncher(c2)
+		fi3.AddCruncher(c3)
+		fi3.AddCruncher(c4)
+		fi3.AddCruncher(c5)
+		fi4.AddCruncher(c1)
+		fi4.AddCruncher(c2)
+		fi4.AddCruncher(c3)
+		fi4.AddCruncher(c4)
+		fi4.AddCruncher(c5)
+
+		fmt.Println("Scenario overkill loaded")
 		break
 	default:
 		fmt.Println("Unknown scenario")
@@ -581,7 +638,10 @@ func (fi *FileInput) RemoveDir(dir string) {
 
 func (fi *FileInput) Start() {
 	scaner := make(chan *File)
-	go fi.ScanDirs(scaner)
+	if len(fi.Crunchers) == 0 {
+		fmt.Println("!Warning! No crunchers added to FileInput")
+	}
+	go fi.Scanner(scaner)
 
 	for {
 		f := <-scaner
@@ -590,40 +650,48 @@ func (fi *FileInput) Start() {
 	}
 }
 
-func (fi *FileInput) ScanDirs(c chan *File) {
+func (fi *FileInput) Scanner(c chan *File) {
 	for {
-		for _, dir := range fi.Dirs {
-			files, err := getFiles(fmt.Sprintf("%s/%s", fi.Disk.Path, dir))
-			if err != nil {
-				fmt.Printf("failed fetching files: %s\n", err)
-				break
+		if len(fi.Dirs) > 0 {
+			for _, dir := range fi.Dirs {
+				fi.ScanDir(dir, c)
 			}
-
-			for i := range files {
-				existing := (*File)(nil)
-				for j := range fi.Files {
-					if files[i].AbsolutePath == fi.Files[j].AbsolutePath {
-						existing = fi.Files[j]
-						break
-					}
-				}
-
-				if existing == nil {
-					files[i].Disk = fi.Disk
-					fi.Files = append(fi.Files, &files[i])
-					c <- &files[i]
-					continue
-				}
-
-				if files[i].File.ModTime() != existing.File.ModTime() {
-					fmt.Println("FileInput.ScanDirs => modified file found =>", existing.File.Name())
-					existing.File = files[i].File
-					c <- existing
-				}
-			}
+		} else {
+			fi.ScanDir(".", c)
 		}
 		time.Sleep(time.Millisecond * time.Duration(app.FileInputSleepTime))
 	}
+}
+
+func (fi *FileInput) ScanDir(dir string, c chan *File) {
+	files, err := getFiles(fmt.Sprintf("%s/%s", fi.Disk.Path, dir))
+	if err != nil {
+		fmt.Printf("failed fetching files: %s\n", err)
+		return
+	}
+	for i := range files {
+		existing := (*File)(nil)
+		for j := range fi.Files {
+			if files[i].AbsolutePath == fi.Files[j].AbsolutePath {
+				existing = fi.Files[j]
+				break
+			}
+		}
+
+		if existing == nil {
+			files[i].Disk = fi.Disk
+			fi.Files = append(fi.Files, &files[i])
+			c <- &files[i]
+			continue
+		}
+
+		if files[i].File.ModTime() != existing.File.ModTime() {
+			fmt.Println("FileInput.ScanDirs => modified file found =>", existing.File.Name())
+			existing.File = files[i].File
+			c <- existing
+		}
+	}
+
 }
 
 func getFiles(dir string) ([]File, error) {
