@@ -21,8 +21,9 @@ import (
 
 type Config struct {
 	Disks              string `mapstructure:"disks"`
-	CounterLimit       string `mapstructure:"counter_data_limit"`
-	FileInputSleepTime string `mapstructure:"file_input_sleep_time"`
+	CounterLimit       int    `mapstructure:"counter_data_limit"`
+	FileInputSleepTime int    `mapstructure:"file_input_sleep_time"`
+	SlowWrite          bool   `mapstructure:"slow_write"`
 }
 
 func LoadConfig() (*Config, error) {
@@ -39,6 +40,7 @@ func LoadConfig() (*Config, error) {
 	if err = viper.Unmarshal(&config); err != nil {
 		return nil, err
 	}
+
 	return &config, nil
 }
 
@@ -48,6 +50,7 @@ type App struct {
 	Disks              []*Disk
 	CounterLimit       int
 	FileInputSleepTime int
+	SlowWrite          bool
 }
 
 func (app *App) GetCruncherByArity(a int) *Cruncher {
@@ -60,26 +63,14 @@ func (app *App) GetCruncherByArity(a int) *Cruncher {
 	return nil
 }
 
-func (app *App) LoadConfig(c *Config) error {
+func (app *App) LoadConfig(c *Config) {
 	disks := strings.Split(c.Disks, ";")
 	for _, d := range disks {
 		app.Disks = append(app.Disks, NewDisk(d))
 	}
-
-	l, err := strconv.Atoi(c.CounterLimit)
-	if err != nil {
-		return err
-	}
-
-	s, err := strconv.Atoi(c.FileInputSleepTime)
-	if err != nil {
-		return err
-	}
-
-	app.CounterLimit = l
-	app.FileInputSleepTime = s
-
-	return nil
+	app.CounterLimit = c.CounterLimit
+	app.FileInputSleepTime = c.FileInputSleepTime
+	app.SlowWrite = c.SlowWrite
 }
 
 func (app *App) GetDiskByPath(path string) *Disk {
@@ -93,7 +84,6 @@ func (app *App) GetDiskByPath(path string) *Disk {
 
 var app App
 var o = NewOutput()
-var L = 10
 
 func main() {
 	app = App{}
@@ -103,11 +93,7 @@ func main() {
 		log.Fatal(err)
 		return
 	}
-
-	if err = app.LoadConfig(config); err != nil {
-		log.Fatal(err)
-		return
-	}
+	app.LoadConfig(config)
 
 	ctx, _ := signal.NotifyContext(context.Background(), os.Interrupt)
 	if err := run(ctx); err != nil {
@@ -176,7 +162,7 @@ func ExecuteCommand(command string) {
 		go PrintCommand(tokens, false)
 		break
 	case "take":
-		go PrintCommand(tokens, true)
+		PrintCommand(tokens, true)
 		break
 	case "merge":
 		go MergeCommand(tokens)
@@ -196,14 +182,14 @@ func HelpCommand() {
 	fmt.Println("Commands:")
 	fmt.Println("help								Prints help")
 	fmt.Println("start								Starts counter")
-	fmt.Println("poll <filename>						Prints file if able")
-	fmt.Println("take <filename>						Prints file (waits if needed)")
-	fmt.Println("merge <filename1> <filename2>					Merge two results")
+	fmt.Println("poll <filename>							Prints file if able")
+	fmt.Println("take <filename>							Prints file (waits if needed)")
+	fmt.Println("merge <filename1, filename2...>					Merge two results")
 	fmt.Println("scenario							Register file inputs and crunchers for scenario")
 	fmt.Println("cr <number>							Add cruncher")
 	fmt.Println("cr ls								List crunchers")
 	fmt.Println("fi ls								List file inputs")
-	fmt.Println("fi <disk> <dir1,dir2> <cruncher_1,cruncher_2>			Add file input")
+	fmt.Println("fi <disk> <dir1,dir2...> <cruncher_1,cruncher_2...>			Add file input")
 	fmt.Println("outputs								Lists all output files")
 }
 
@@ -224,8 +210,8 @@ func ScenarioCommand(tokens []string) {
 		fmt.Println("Scenario 1 loaded")
 		break
 	case "2":
-		fi1 := NewFileInput(1, app.Disks[0], []string{"A", "B"})
-		fi2 := NewFileInput(2, app.Disks[1], []string{"C", "D"})
+		fi1 := NewFileInput(1, app.Disks[0], []string{"."})
+		fi2 := NewFileInput(2, app.Disks[1], []string{"."})
 		app.Inputs = append(app.Inputs, fi1)
 		app.Inputs = append(app.Inputs, fi2)
 
@@ -234,6 +220,21 @@ func ScenarioCommand(tokens []string) {
 		fi1.Crunchers = append(fi1.Crunchers, c1)
 		fi2.Crunchers = append(fi2.Crunchers, c1)
 		fmt.Println("Scenario 2 loaded")
+		break
+	case "3":
+		fi1 := NewFileInput(1, app.Disks[0], []string{"."})
+		fi2 := NewFileInput(2, app.Disks[1], []string{"."})
+		app.Inputs = append(app.Inputs, fi1)
+		app.Inputs = append(app.Inputs, fi2)
+
+		c1 := NewCruncher(1)
+		c2 := NewCruncher(2)
+
+		fi1.Crunchers = append(fi1.Crunchers, c1)
+		fi2.Crunchers = append(fi2.Crunchers, c1)
+		fi1.Crunchers = append(fi1.Crunchers, c2)
+		fi2.Crunchers = append(fi2.Crunchers, c2)
+		fmt.Println("Scenario 3 loaded")
 		break
 	default:
 		fmt.Println("Unknown scenario")
@@ -364,12 +365,12 @@ func PrintCommand(tokens []string, block bool) {
 }
 
 func MergeCommand(tokens []string) {
-	if len(tokens) < 3 {
+	if len(tokens) < 2 {
 		fmt.Println("Invalid arguments")
 		return
 	}
 
-	o.MergeFiles(tokens[1], tokens[2])
+	o.MergeFiles(tokens[1])
 }
 
 type Disk struct {
@@ -684,24 +685,34 @@ func (o *Output) Listen() {
 	}
 }
 
-func (o *Output) MergeFiles(fn1 string, fn2 string) {
-	of1 := o.GetOutputFile(fn1)
-	of2 := o.GetOutputFile(fn2)
-
-	if of1 == nil || of2 == nil {
-		fmt.Println("Output => MergeFiles => one or both file names invalid", fn1, fn2)
-		return
+func (o *Output) MergeFiles(fn string) {
+	ofs := []*OutputFile{}
+	paths := strings.Split(fn, ",")
+	for _, p := range paths {
+		t := o.GetOutputFile(p)
+		if t == nil {
+			fmt.Println("Output => MergeFiles => file not found")
+			return
+		}
+		ofs = append(ofs, t)
 	}
 
 	defer func() {
-		of1.Mutex.Unlock()
-		of2.Mutex.Unlock()
+		for _, of := range ofs {
+			of.Mutex.Unlock()
+		}
 	}()
 
-	of1.Mutex.Lock()
-	of2.Mutex.Lock()
-	of := o.GetOrCreateOutputFile(fmt.Sprintf("%s-%s", of1.FileName, of2.FileName))
-	of.Data = mergeMaps(of1.Data, of2.Data)
+	f := "m"
+	for _, of := range ofs {
+		of.Mutex.Lock()
+		f = fmt.Sprintf("%s-%s", f, of.FileName)
+	}
+
+	of := o.GetOrCreateOutputFile(f)
+	for _, o := range ofs {
+		of.Data = mergeMaps(of.Data, o.Data)
+	}
 	of.WriteToFile()
 }
 
@@ -714,6 +725,7 @@ type OutputFile struct {
 func NewOutputFile(fn string) *OutputFile {
 	return &OutputFile{
 		FileName: fn,
+		Data:     make(map[string]int),
 	}
 }
 
@@ -746,7 +758,9 @@ func (of *OutputFile) WriteToFile() {
 		}
 	}
 
-	time.Sleep(time.Second * 30)
+	if app.SlowWrite {
+		time.Sleep(time.Second * 30)
+	}
 }
 
 func splitText(words []string, num int) [][]string {
